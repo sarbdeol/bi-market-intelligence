@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+  # ─── Infrastructure ───────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: bimarket
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bimarket_secret}
+      POSTGRES_DB: market_intelligence
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bimarket"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  # ─── Backend API ──────────────────────────────────────
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://bimarket:bimarket_secret@postgres/market_intelligence
+      REDIS_URL: redis://redis:6379/0
+      SEED_DATA: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Celery Worker (scheduled scraping) ──────────────
+  celery-worker:
+    build: ./backend
+    command: celery -A app.tasks.celery_app worker --loglevel=info -Q scraping,analytics
+    environment:
+      DATABASE_URL: postgresql://bimarket:bimarket_secret@postgres/market_intelligence
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Celery Beat (cron scheduler) ────────────────────
+  celery-beat:
+    build: ./backend
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://bimarket:bimarket_secret@postgres/market_intelligence
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - celery-worker
+    restart: unless-stopped
+
+  # ─── Frontend (Nginx + React) ─────────────────────────
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
